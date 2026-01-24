@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AoA Localization Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f5f5f5;
+      padding: 1rem;
+    }
+    h1 { text-align: center; }
+
+    .controls, .charts {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 2rem;
+      margin-top: 1rem;
+    }
+
+    canvas {
+      background: white;
+      border: 1px solid #ccc;
+      padding: 1rem;
+    }
+
+    .readout {
+      text-align: center;
+      font-weight: bold;
+      margin-top: 0.5rem;
+    }
+
+    #logStatus {
+      text-align: center;
+      font-weight: bold;
+      padding: 0.5rem;
+      margin-top: 0.5rem;
+      border-radius: 6px;
+    }
+
+    .logging-on {
+      background: #d4f8d4;
+      color: #0a6d0a;
+    }
+
+    .logging-off {
+      background: #f8d4d4;
+      color: #6d0a0a;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>AoA Localization Dashboard</h1>
+
+<!-- ================= CONTROLS ================= -->
+<div class="controls">
+  <div>
+    X <input id="x" size="4">
+    Y <input id="y" size="4">
+    Z <input id="z" size="4">
+    <button onclick="send()">SEND</button>
+    <button onclick="stop()">STOP</button>
+  </div>
+  <div>
+    D (m)
+    <input id="anchorDistance" value="2" step="0.1" size="4">
+  </div>
+</div>
+
+<!-- ================= LOG STATUS ================= -->
+<div id="logStatus" class="logging-off">
+  ⛔ Logging STOPPED
+</div>
+
+<!-- ================= AZ / EL ================= -->
+<div class="charts">
+  <canvas id="azChart" width="400" height="200"></canvas>
+  <canvas id="elChart" width="400" height="200"></canvas>
+</div>
+
+<!-- ================= XY GRID ================= -->
+<div class="charts">
+  <canvas id="xyChart" width="600" height="400"></canvas>
+</div>
+
+<!-- ================= READOUTS ================= -->
+<div class="readout" id="xyReadout">XY Intersection: —</div>
+<div class="readout" id="zAvgReadout">Z Average: —</div>
+<div class="readout" id="xyzReadout">3D Intersection: —</div>
+
+<script>
+/* =====================================================
+   FIXED MAC → COLOR MAP
+===================================================== */
+const MAC_COLORS = {
+  "20BA36977463": "blue",
+  "20BA369AFC6B": "green"
+};
+
+let loggingActive = false;
+
+/* ================= LOG STATUS ================= */
+function updateLogStatus(active) {
+  const el = document.getElementById("logStatus");
+  if (active) {
+    el.textContent = "✅ Logging STARTED";
+    el.className = "logging-on";
+  } else {
+    el.textContent = "⛔ Logging STOPPED";
+    el.className = "logging-off";
+  }
+}
+
+/* ================= UI CONTROL ================= */
+function send() {
+  if (loggingActive) return;
+
+  loggingActive = true;
+  updateLogStatus(true);
+
+  fetch('/position', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      x: x.value,
+      y: y.value,
+      z: z.value,
+      active: true
+    })
+  });
+}
+
+function stop() {
+  if (!loggingActive) return;
+
+  loggingActive = false;
+  updateLogStatus(false);
+
+  fetch('/position', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ active: false })
+  });
+}
+
+/* ================= CHARTS ================= */
+const azChart = new Chart(document.getElementById('azChart'), {
+  type: 'line',
+  data: { labels: [], datasets: [] },
+  options: { animation:false, scales:{ y:{ min:-180, max:180 } } }
+});
+
+const elChart = new Chart(document.getElementById('elChart'), {
+  type: 'line',
+  data: { labels: [], datasets: [] },
+  options: { animation:false, scales:{ y:{ min:-90, max:90 } } }
+});
+
+const xyChart = new Chart(document.getElementById('xyChart'), {
+  type: 'scatter',
+  data: {
+    datasets: [
+      { label:'Anchor 1', data:[{x:0,y:0}], backgroundColor:'blue', pointRadius:9 },
+      { label:'Anchor 2', data:[{x:2,y:0}], backgroundColor:'green', pointRadius:9 },
+      { label:'XY Intersection', data:[], backgroundColor:'red', pointRadius:7 },
+      { label:'3D Intersection (XY)', data:[], backgroundColor:'purple', pointRadius:7 }
+    ]
+  },
+  options: { animation:false, scales:{ x:{type:'linear'}, y:{} } }
+});
+
+/* ================= LIVE AOA ================= */
+async function fetchLatest() {
+  const r = await fetch('/latest');
+  if (!r.ok) return;
+
+  const data = await r.json();
+  const t = new Date().toLocaleTimeString();
+  const now = Date.now()/1000;
+
+  Object.entries(data).forEach(([mac,v]) => {
+    if (now - v.timestamp > 5) return;
+    const color = MAC_COLORS[mac] || 'black';
+
+    let az = azChart.data.datasets.find(d=>d.label===mac);
+    if (!az) azChart.data.datasets.push(az={label:mac,data:[],borderColor:color});
+    az.data.push(v.azimuth); if (az.data.length>30) az.data.shift();
+
+    let el = elChart.data.datasets.find(d=>d.label===mac);
+    if (!el) elChart.data.datasets.push(el={label:mac,data:[],borderColor:color});
+    el.data.push(v.elevation); if (el.data.length>30) el.data.shift();
+  });
+
+  azChart.data.labels.push(t);
+  elChart.data.labels.push(t);
+  if (azChart.data.labels.length>30) {
+    azChart.data.labels.shift();
+    elChart.data.labels.shift();
+  }
+
+  azChart.update();
+  elChart.update();
+}
+
+/* ================= GRID ================= */
+async function fetchGrid() {
+  const D = anchorDistance.value;
+  const r = await fetch(`/grid?D=${D}`);
+  if (!r.ok) return;
+
+  const p = await r.json();
+
+  xyChart.data.datasets[2].data=[{x:p.x,y:p.y}];
+  zAvgReadout.textContent=`Z Average: ${p.height.toFixed(2)} m`;
+  xyReadout.textContent=`XY Intersection: (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`;
+
+  if (p.intersection3d) {
+    const q=p.intersection3d;
+    xyChart.data.datasets[3].data=[{x:q.x,y:q.y}];
+    xyzReadout.textContent=`3D Intersection: (${q.x.toFixed(2)}, ${q.y.toFixed(2)}, ${q.z.toFixed(2)})`;
+  }
+
+  xyChart.data.datasets[1].data=[{x:D,y:0}];
+  xyChart.update();
+}
+
+setInterval(fetchLatest,2000);
+setInterval(fetchGrid,3000);
+</script>
+
+</body>
+</html>
