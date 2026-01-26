@@ -1,0 +1,6 @@
+SELECT *
+FROM "uudp_packet"
+WHERE
+time >= now() - interval '1 minute'
+AND
+("azimuth" IS NOT NULL OR "channel" IS NOT NULL OR "drone_x" IS NOT NULL OR "drone_y" IS NOT NULL OR "drone_z" IS NOT NULL OR "elevation" IS NOT NULL OR "rssi" IS NOT NULL)
