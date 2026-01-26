@@ -41,17 +41,17 @@ drone_position = {
     "z": 0.0
 }
 
-latest_aoa = {}      # peer_mac → az, el, timestamp
+latest_aoa = {}      # anchor_mac → az, el, timestamp
 latest_D = 2.0
 
 # ======================================================
-# 🔒 HARDCODED ANCHOR MACs (DO NOT CHANGE ORDER)
+# HARDCODED ANCHORS
 # ======================================================
 ANCHOR_1_MAC = "20BA36977463"
 ANCHOR_2_MAC = "20BA369AFC6B"
 
-print(f"[ANCHORS] A1={ANCHOR_1_MAC} @ (0,0,0)", flush=True)
-print(f"[ANCHORS] A2={ANCHOR_2_MAC} @ (D,0,0)", flush=True)
+print(f"[ANCHORS] A1={ANCHOR_1_MAC}", flush=True)
+print(f"[ANCHORS] A2={ANCHOR_2_MAC}", flush=True)
 
 # ======================================================
 # FLASK APP
@@ -62,13 +62,9 @@ app = Flask(__name__)
 def index():
     return send_from_directory('.', 'index.html')
 
-# ------------------------------------------------------
-# UI CONTROL (DB LOGGING)
-# ------------------------------------------------------
 @app.route('/position', methods=['POST'])
 def update_position():
     data = request.json
-
     drone_position["active"] = bool(data.get("active", False))
 
     if drone_position["active"]:
@@ -81,30 +77,27 @@ def update_position():
 
     return {"status": "ok"}
 
-# ------------------------------------------------------
-# LIVE AOA (UI)
-# ------------------------------------------------------
-@app.route('/latest')
-def latest():
-    return jsonify(latest_aoa)
-
-# ------------------------------------------------------
-# GRID + 2D + Z AVG + TRUE 3D
-# ------------------------------------------------------
 @app.route('/grid')
 def grid():
     global latest_D
     latest_D = float(request.args.get("D", 2.0))
 
+    # Require both anchors
     if ANCHOR_1_MAC not in latest_aoa or ANCHOR_2_MAC not in latest_aoa:
         return {"error": "Both anchors not available"}, 400
 
     a1 = latest_aoa[ANCHOR_1_MAC]
     a2 = latest_aoa[ANCHOR_2_MAC]
 
+    # --------------------------------------------------
+    # ANCHOR POSITIONS
+    # --------------------------------------------------
     P1 = (0.0, 0.0, 0.0)
     P2 = (latest_D, 0.0, 0.0)
 
+    # --------------------------------------------------
+    # 2D XY INTERSECTION (AZIMUTH ONLY)
+    # --------------------------------------------------
     def unit2d(az):
         r = math.radians(az)
         return math.sin(r), math.cos(r)
@@ -120,6 +113,9 @@ def grid():
     xy_x = P1[0] + t * dx1
     xy_y = P1[1] + t * dy1
 
+    # --------------------------------------------------
+    # Z AVERAGE (FROM ELEVATION)
+    # --------------------------------------------------
     d1 = math.hypot(xy_x - P1[0], xy_y - P1[1])
     d2 = math.hypot(xy_x - P2[0], xy_y - P2[1])
 
@@ -127,6 +123,9 @@ def grid():
     z2 = math.tan(math.radians(a2["elevation"])) * d2
     z_avg = (z1 + z2) / 2.0
 
+    # --------------------------------------------------
+    # TRUE 3D INTERSECTION (RAY–RAY)
+    # --------------------------------------------------
     def unit3d(az, el):
         azr = math.radians(az)
         elr = math.radians(el)
@@ -167,11 +166,20 @@ def grid():
         "x": xy_x,
         "y": xy_y,
         "height": z_avg,
-        "intersection3d": {"x": ix, "y": iy, "z": iz}
+        "intersection3d": {
+            "x": ix,
+            "y": iy,
+            "z": iz
+        }
     }
 
+
+@app.route('/latest')
+def latest():
+    return jsonify(latest_aoa)
+
 # ======================================================
-# UDP LISTENER  (DB FEED FIXED ONLY HERE)
+# UDP LISTENER (CLEAN DB FEED)
 # ======================================================
 def listen_udp():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -191,26 +199,30 @@ def listen_udp():
         if len(parts) < 7:
             continue
 
-        # UUDF mapping (correct)
-        tag_mac    = parts[0].strip()
+        # ------------------------------
+        # UUDF FIELD MAPPING (FINAL)
+        # ------------------------------
+        tag_mac    = parts[0].strip()                    # Tag / Eddystone ID
         rssi       = int(parts[1])
         azimuth    = int(parts[2])
         elevation  = int(parts[3])
-        channel    = int(parts[5])                      # FIELD
-        peer_mac   = parts[6].replace('"', '').strip()  # Anchor MAC
+        channel    = int(parts[5])                       # FIELD
+        anchor_mac = parts[6].replace('"', '').strip()   # Anchor ID
 
-        # Live AoA
-        latest_aoa[peer_mac] = {
+        # Live AoA memory (used by grid)
+        latest_aoa[anchor_mac] = {
             "azimuth": azimuth,
             "elevation": elevation,
             "timestamp": time.time()
         }
 
-        # DB logging
+        # ------------------------------
+        # DATABASE WRITE (CLEAN)
+        # ------------------------------
         if drone_position["active"]:
             point = (
                 Point("uudp_packet")
-                .tag("peer_mac", peer_mac)
+                .tag("anchor_mac", anchor_mac)
                 .tag("tag_mac", tag_mac)
                 .field("rssi", rssi)
                 .field("channel", channel)
