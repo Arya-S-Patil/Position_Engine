@@ -3,6 +3,8 @@ import os
 import threading
 import time
 import math
+import csv
+from io import StringIO
 from flask import Flask, request, send_from_directory, jsonify
 from dotenv import load_dotenv
 from influxdb_client import InfluxDBClient, Point, WritePrecision
@@ -45,10 +47,7 @@ latest_D = 2.0
 # ======================================================
 # 🔒 HARDCODED ANCHOR MACs (DO NOT CHANGE ORDER)
 # ======================================================
-# Blue anchor → origin (0,0,0)
 ANCHOR_1_MAC = "20BA36977463"
-
-# Green anchor → (D,0,0)
 ANCHOR_2_MAC = "20BA369AFC6B"
 
 print(f"[ANCHORS] A1={ANCHOR_1_MAC} @ (0,0,0)", flush=True)
@@ -97,22 +96,15 @@ def grid():
     global latest_D
     latest_D = float(request.args.get("D", 2.0))
 
-    # Require both anchors
     if ANCHOR_1_MAC not in latest_aoa or ANCHOR_2_MAC not in latest_aoa:
         return {"error": "Both anchors not available"}, 400
 
     a1 = latest_aoa[ANCHOR_1_MAC]
     a2 = latest_aoa[ANCHOR_2_MAC]
 
-    # --------------------------------------------------
-    # ANCHOR POSITIONS
-    # --------------------------------------------------
     P1 = (0.0, 0.0, 0.0)
     P2 = (latest_D, 0.0, 0.0)
 
-    # --------------------------------------------------
-    # 2D XY INTERSECTION (AZIMUTH ONLY)
-    # --------------------------------------------------
     def unit2d(az):
         r = math.radians(az)
         return math.sin(r), math.cos(r)
@@ -128,9 +120,6 @@ def grid():
     xy_x = P1[0] + t * dx1
     xy_y = P1[1] + t * dy1
 
-    # --------------------------------------------------
-    # Z AVERAGE (FROM ELEVATION)
-    # --------------------------------------------------
     d1 = math.hypot(xy_x - P1[0], xy_y - P1[1])
     d2 = math.hypot(xy_x - P2[0], xy_y - P2[1])
 
@@ -138,9 +127,6 @@ def grid():
     z2 = math.tan(math.radians(a2["elevation"])) * d2
     z_avg = (z1 + z2) / 2.0
 
-    # --------------------------------------------------
-    # TRUE 3D INTERSECTION (RAY–RAY)
-    # --------------------------------------------------
     def unit3d(az, el):
         azr = math.radians(az)
         elr = math.radians(el)
@@ -181,15 +167,11 @@ def grid():
         "x": xy_x,
         "y": xy_y,
         "height": z_avg,
-        "intersection3d": {
-            "x": ix,
-            "y": iy,
-            "z": iz
-        }
+        "intersection3d": {"x": ix, "y": iy, "z": iz}
     }
 
 # ======================================================
-# UDP LISTENER
+# UDP LISTENER  (DB FEED FIXED ONLY HERE)
 # ======================================================
 def listen_udp():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -198,31 +180,40 @@ def listen_udp():
 
     while True:
         data, _ = sock.recvfrom(2048)
-        msg = data.decode().strip()
+        msg = data.decode(errors="ignore").strip()
 
         if not msg.startswith("+UUDF:"):
             continue
 
-        parts = msg.split(":")[1].split(",")
+        payload = msg.split(":", 1)[1]
+        parts = next(csv.reader(StringIO(payload)))
+
         if len(parts) < 7:
             continue
 
-        peer_mac  = parts[6].replace('"', '').strip()
-        azimuth   = int(parts[2])
-        elevation = int(parts[3])
+        # UUDF mapping (correct)
+        tag_mac    = parts[0].strip()
+        rssi       = int(parts[1])
+        azimuth    = int(parts[2])
+        elevation  = int(parts[3])
+        channel    = int(parts[5])                      # FIELD
+        peer_mac   = parts[6].replace('"', '').strip()  # Anchor MAC
 
-        # Always update live AoA
+        # Live AoA
         latest_aoa[peer_mac] = {
             "azimuth": azimuth,
             "elevation": elevation,
             "timestamp": time.time()
         }
 
-        # DB logging ONLY when active
+        # DB logging
         if drone_position["active"]:
             point = (
                 Point("uudp_packet")
                 .tag("peer_mac", peer_mac)
+                .tag("tag_mac", tag_mac)
+                .field("rssi", rssi)
+                .field("channel", channel)
                 .field("azimuth", azimuth)
                 .field("elevation", elevation)
                 .field("drone_x", drone_position["x"])
