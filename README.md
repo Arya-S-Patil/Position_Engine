@@ -70,9 +70,9 @@ Position_Engine
 
 ### 1. Capture Data
 Run the UDP listener to collect AoA packets:
-
+(with all the visualization and Influx_DB database)
 ```bash
-python udp.py
+python main.py
 ````
 
 ### 2. Combine CSV Files
