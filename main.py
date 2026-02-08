@@ -172,7 +172,23 @@ def grid():
             "z": iz
         }
     }
+timer_active = False
+timer_start = None
 
+@app.route('/timer', methods=['POST'])
+def timer_control():
+    global timer_active, timer_start
+    data = request.json
+
+    if data.get("active"):
+        timer_active = True
+        timer_start = time.time()
+        print("[TIMER] Started (UI only)", flush=True)
+    else:
+        timer_active = False
+        print("[TIMER] Stopped (UI only)", flush=True)
+
+    return jsonify({"status": "ok"})
 
 @app.route('/latest')
 def latest():
