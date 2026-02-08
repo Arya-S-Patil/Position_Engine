@@ -6,12 +6,9 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
-    body {
-      font-family: sans-serif;
-      background: #f5f5f5;
-      padding: 1rem;
-    }
+    body { font-family: sans-serif; background: #f5f5f5; padding: 1rem; }
     h1 { text-align: center; }
+    h2 { margin-bottom: 0.3rem; }
 
     .controls, .charts {
       display: flex;
@@ -21,17 +18,17 @@
       margin-top: 1rem;
     }
 
-    canvas {
+    .box {
       background: white;
-      border: 1px solid #ccc;
-      padding: 1rem;
+      padding: 1rem 1.5rem;
+      border-radius: 8px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.1);
+      text-align: center;
     }
 
-    .readout {
-      text-align: center;
-      font-weight: bold;
-      margin-top: 0.5rem;
-    }
+    canvas { background: white; border: 1px solid #ccc; padding: 1rem; }
+
+    .readout { text-align: center; font-weight: bold; margin-top: 0.5rem; }
 
     #logStatus {
       text-align: center;
@@ -41,14 +38,32 @@
       border-radius: 6px;
     }
 
-    .logging-on {
-      background: #d4f8d4;
-      color: #0a6d0a;
+    .logging-on { background: #d4f8d4; color: #0a6d0a; }
+    .logging-off { background: #f8d4d4; color: #6d0a0a; }
+
+    #timerDisplay {
+      font-size: 1.8rem;
+      font-weight: bold;
+      margin-top: 0.5rem;
     }
 
-    .logging-off {
-      background: #f8d4d4;
-      color: #6d0a0a;
+    .timer-finished {
+      color: red;
+      animation: flash 1s infinite;
+    }
+
+    @keyframes flash {
+      0% { opacity: 1; }
+      50% { opacity: 0.2; }
+      100% { opacity: 1; }
+    }
+
+    #timerAlert {
+      display: none;
+      font-size: 1.5rem;
+      color: red;
+      font-weight: bold;
+      margin-top: 0.5rem;
     }
   </style>
 </head>
@@ -57,46 +72,55 @@
 
 <h1>AoA Localization Dashboard</h1>
 
-<!-- ================= CONTROLS ================= -->
 <div class="controls">
-  <div>
+
+  <div class="box">
+    <h2>Drone Position (meters)</h2>
     X <input id="x" size="4">
     Y <input id="y" size="4">
-    Z <input id="z" size="4">
+    Z <input id="z" size="4"><br><br>
     <button onclick="send()">SEND</button>
     <button onclick="stop()">STOP</button>
   </div>
-  <div>
-    D (m)
+
+  <div class="box">
+    <h2>Anchor Distance</h2>
+    D (m)<br>
     <input id="anchorDistance" value="2" step="0.1" size="4">
   </div>
+
+  <div class="box">
+    <h2>Experiment Timer</h2>
+    Duration (min)<br>
+    <input id="timerMinutes" value="1" step="0.5" size="4"><br><br>
+    <button onclick="startCountdown()">▶ Start</button>
+    <button onclick="cancelCountdown()">⏹ Cancel</button>
+    <div id="timerDisplay">00:00</div>
+    <div id="timerAlert">⏰ TIMER COMPLETE</div>
+  </div>
+
 </div>
 
-<!-- ================= LOG STATUS ================= -->
-<div id="logStatus" class="logging-off">
-  ⛔ Logging STOPPED
-</div>
+<div id="logStatus" class="logging-off">⛔ Logging STOPPED</div>
 
-<!-- ================= AZ / EL ================= -->
 <div class="charts">
   <canvas id="azChart" width="400" height="200"></canvas>
   <canvas id="elChart" width="400" height="200"></canvas>
 </div>
 
-<!-- ================= XY GRID ================= -->
 <div class="charts">
   <canvas id="xyChart" width="600" height="400"></canvas>
 </div>
 
-<!-- ================= READOUTS ================= -->
 <div class="readout" id="xyReadout">XY Intersection: —</div>
 <div class="readout" id="zAvgReadout">Z Average: —</div>
 <div class="readout" id="xyzReadout">3D Intersection: —</div>
 
+<audio id="alarmSound" preload="auto">
+  <source src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg" type="audio/ogg">
+</audio>
+
 <script>
-/* =====================================================
-   FIXED MAC → COLOR MAP
-===================================================== */
 const MAC_COLORS = {
   "20BA36977463": "blue",
   "20BA369AFC6B": "green"
@@ -104,40 +128,32 @@ const MAC_COLORS = {
 
 let loggingActive = false;
 
-/* ================= LOG STATUS ================= */
+/* Unlock audio on first click */
+document.addEventListener("click", () => {
+  const snd = document.getElementById("alarmSound");
+  snd.play().then(() => snd.pause()).catch(()=>{});
+}, { once: true });
+
 function updateLogStatus(active) {
   const el = document.getElementById("logStatus");
-  if (active) {
-    el.textContent = "✅ Logging STARTED";
-    el.className = "logging-on";
-  } else {
-    el.textContent = "⛔ Logging STOPPED";
-    el.className = "logging-off";
-  }
+  el.textContent = active ? "✅ Logging STARTED" : "⛔ Logging STOPPED";
+  el.className = active ? "logging-on" : "logging-off";
 }
 
-/* ================= UI CONTROL ================= */
 function send() {
   if (loggingActive) return;
-
   loggingActive = true;
   updateLogStatus(true);
 
   fetch('/position', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      x: x.value,
-      y: y.value,
-      z: z.value,
-      active: true
-    })
+    body: JSON.stringify({ x: x.value, y: y.value, z: z.value, active: true })
   });
 }
 
 function stop() {
   if (!loggingActive) return;
-
   loggingActive = false;
   updateLogStatus(false);
 
@@ -148,17 +164,69 @@ function stop() {
   });
 }
 
+/* ================= TIMER ================= */
+let countdownInterval = null;
+let remainingSeconds = 0;
+
+function updateTimerDisplay() {
+  const mins = String(Math.floor(remainingSeconds / 60)).padStart(2, '0');
+  const secs = String(remainingSeconds % 60).padStart(2, '0');
+  timerDisplay.textContent = `${mins}:${secs}`;
+}
+
+function startCountdown() {
+  const mins = parseFloat(timerMinutes.value);
+  if (isNaN(mins) || mins <= 0) return;
+
+  document.getElementById("timerAlert").style.display = "none";
+  timerDisplay.classList.remove("timer-finished");
+
+  remainingSeconds = Math.round(mins * 60);
+  updateTimerDisplay();
+
+  clearInterval(countdownInterval);
+  countdownInterval = setInterval(() => {
+    remainingSeconds--;
+    updateTimerDisplay();
+
+    if (remainingSeconds <= 0) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+      timerDisplay.classList.add("timer-finished");
+      document.getElementById("timerAlert").style.display = "block";
+      document.getElementById("alarmSound").play();
+    }
+  }, 1000);
+}
+
+function cancelCountdown() {
+  clearInterval(countdownInterval);
+  countdownInterval = null;
+  remainingSeconds = 0;
+  updateTimerDisplay();
+  document.getElementById("timerAlert").style.display = "none";
+  timerDisplay.classList.remove("timer-finished");
+}
+
 /* ================= CHARTS ================= */
 const azChart = new Chart(document.getElementById('azChart'), {
   type: 'line',
   data: { labels: [], datasets: [] },
-  options: { animation:false, scales:{ y:{ min:-180, max:180 } } }
+  options: {
+    animation:false,
+    plugins:{ title:{ display:true, text:"Azimuth vs Time" } },
+    scales:{ y:{ min:-180, max:180, title:{display:true,text:"Degrees"} } }
+  }
 });
 
 const elChart = new Chart(document.getElementById('elChart'), {
   type: 'line',
   data: { labels: [], datasets: [] },
-  options: { animation:false, scales:{ y:{ min:-90, max:90 } } }
+  options: {
+    animation:false,
+    plugins:{ title:{ display:true, text:"Elevation vs Time" } },
+    scales:{ y:{ min:-90, max:90, title:{display:true,text:"Degrees"} } }
+  }
 });
 
 const xyChart = new Chart(document.getElementById('xyChart'), {
@@ -171,10 +239,17 @@ const xyChart = new Chart(document.getElementById('xyChart'), {
       { label:'3D Intersection (XY)', data:[], backgroundColor:'purple', pointRadius:7 }
     ]
   },
-  options: { animation:false, scales:{ x:{type:'linear'}, y:{} } }
+  options: {
+    animation:false,
+    plugins:{ title:{ display:true, text:"XY Position Grid" } },
+    scales:{
+      x:{ type:'linear', title:{display:true,text:"X (m)"} },
+      y:{ title:{display:true,text:"Y (m)"} }
+    }
+  }
 });
 
-/* ================= LIVE AOA ================= */
+/* ================= FETCH ================= */
 async function fetchLatest() {
   const r = await fetch('/latest');
   if (!r.ok) return;
@@ -207,7 +282,6 @@ async function fetchLatest() {
   elChart.update();
 }
 
-/* ================= GRID ================= */
 async function fetchGrid() {
   const D = anchorDistance.value;
   const r = await fetch(`/grid?D=${D}`);
